@@ -1,0 +1,1103 @@
+---
+title: "Code availability for the paper Modelling viral encephalitis caused by herpes simplex virus 1 infection in cerebral organoids"
+output: html_notebook
+---
+
+```{r}
+library(Seurat)
+
+library(ggplot2)
+library(pheatmap)
+
+library(dplyr)
+library(tidyr)
+library(Matrix)
+
+#library(Nebulosa)
+library(edgeR)
+library(clusterProfiler)
+library(msigdbr)
+library(AUCell)
+library(DESeq2)
+library(gprofiler2)
+library(RColorBrewer)
+options(bitmapType='cairo')
+```
+
+# Analysis of control (CTRL) organoids
+
+Read digital gene expression matrices (generated with Spacemake) for CTRL samples and create Seurat objects for each sample keeping barcodes with at least 250 detected genes and genes detected at least 5 cells
+```{r eval=FALSE, include=FALSE}
+Xmoo1_CTRL_1 = read.table(file = 'digital_gene_expression/scRNAseq_spacemake/Xmoo1_CTRL_1.txt.gz', sep = '', row.names = 1, header = T) %>%
+  CreateSeuratObject(min.cells = 5, min.features = 250, project = 'Xmoo1_CTRL_1', assay = 'RNA') 
+Xmoo1_CTRL_1$line = 'iPSC line 1' 
+Xmoo1_CTRL_1$replicate = 'Rep. 1' 
+Xmoo1_CTRL_1$condition = 'CTRL' 
+
+Xmoo1_CTRL_2 = read.table(file = 'digital_gene_expression/scRNAseq_spacemake/Xmoo1_CTRL_2.txt.gz', sep = '', row.names = 1, header = T) %>%
+  CreateSeuratObject(min.cells = 5, min.features = 250, project = 'Xmoo1_CTRL_2', assay = 'RNA') 
+Xmoo1_CTRL_2$line = 'iPSC line 1' 
+Xmoo1_CTRL_2$replicate = 'Rep. 2' 
+Xmoo1_CTRL_2$condition = 'CTRL'
+
+Gline_CTRL_1 = read.table(file = 'digital_gene_expression/scRNAseq_spacemake/Gline_CTRL_1.txt.gz', sep = '', row.names = 1, header = T) %>%
+  CreateSeuratObject(min.cells = 5, min.features = 250, project = 'Gline_CTRL_1', assay = 'RNA') 
+Gline_CTRL_1$line = 'iPSC line 2' 
+Gline_CTRL_1$replicate = 'Rep. 1' 
+Gline_CTRL_1$condition = 'CTRL' 
+
+Gline_CTRL_2 = read.table(file = 'digital_gene_expression/scRNAseq_spacemake/Gline_CTRL_2.txt.gz', sep = '', row.names = 1, header = T) %>%
+  CreateSeuratObject(min.cells = 5, min.features = 250, project = 'Gline_CTRL_2', assay = 'RNA')
+Gline_CTRL_2$line = 'iPSC line 2' 
+Gline_CTRL_2$replicate = 'Rep. 2' 
+Gline_CTRL_2$condition = 'CTRL'
+```
+
+Create a single integrated Seurat object with all CTRL samples (2 replicates for 2 cell lines) after correcting for sample- and cell line-specific batch effects
+```{r eval=FALSE, include=FALSE}
+integration.list <- list(Xmoo1_CTRL_1, Xmoo1_CTRL_2, Gline_CTRL_1, Gline_CTRL_2)
+
+for (i in 1:length(integration.list)) {
+    integration.list[[i]] <- SCTransform(integration.list[[i]], verbose = T,method= 'glmGamPoi', assay = 'RNA', new.assay.name = 'SCT', vst.flavor='v2')
+}
+integration.features <- SelectIntegrationFeatures(object.list = integration.list, nfeatures = 3000)
+
+integration.list <- PrepSCTIntegration(object.list = integration.list, anchor.features = integration.features, verbose = T)
+integration.anchors <- FindIntegrationAnchors(object.list = integration.list, normalization.method = "SCT", anchor.features = integration.features, verbose = T)
+
+CTRL <- IntegrateData(anchorset = integration.anchors, normalization.method = "SCT",  verbose = T)
+DefaultAssay(CTRL) <- 'integrated'
+
+remove(i, integration.list, integration.features, integration.anchors)
+```
+
+Perform dimensionality reduction and clustering with 30 principal components and default parameters
+```{r eval=FALSE, include=FALSE}
+CTRL <- CTRL  %>% RunPCA( verbose = T) %>% RunUMAP( dims = 1:30, verbose = T) %>% FindNeighbors( dims = 1:30, verbose = T) %>% FindClusters( verbose = T) 
+```
+
+Inspect transcript counts (nCount) and % of mitochondrial transcripts (percent_MT) to identify low quality clusters
+```{r eval=FALSE, include=FALSE}
+DefaultAssay(CTRL)= 'RNA'
+CTRL= CTRL %>%PercentageFeatureSet( pattern = "^MT-", col.name = "percent_MT")
+VlnPlot(CTRL, 'nCount_RNA', y.max = 2000, pt.size = 0)+ NoLegend()
+VlnPlot(CTRL, 'percent_MT',  pt.size = 0)+ NoLegend()
+```
+
+Remove low quality clusters 1 (low nCount) and 10 (low nCount, high mito) and select top 75% cells by nCount per cluster
+```{r eval=FALSE, include=FALSE}
+CTRL$barcode= colnames(CTRL)
+top75= CTRL@meta.data[!CTRL$seurat_clusters %in% c(1, 10),] %>% group_by(seurat_clusters) %>% top_frac(n = 0.75, wt = nCount_RNA_exonic)
+CTRL = subset(CTRL, cells=top75$barcode)
+```
+
+Re-run integration, dimensionality reduction and clustering
+```{r eval=FALSE, include=FALSE}
+Idents(CTRL) = 'sample'
+integration.list <- SplitObject(CTRL)
+
+for (i in 1:length(integration.list)) {
+    integration.list[[i]] <- SCTransform(integration.list[[i]],method= 'glmGamPoi', assay = 'RNA', new.assay.name = 'SCT', vst.flavor='v2')
+}
+integration.features <- SelectIntegrationFeatures(object.list = integration.list, nfeatures = 3000)
+
+integration.list <- PrepSCTIntegration(object.list = integration.list, anchor.features = integration.features)
+integration.anchors <- FindIntegrationAnchors(object.list = integration.list, normalization.method = "SCT", anchor.features = integration.features)
+
+CTRL <- IntegrateData(anchorset = integration.anchors, normalization.method = "SCT")
+DefaultAssay(CTRL) <- 'integrated'
+CTRL <- CTRL  %>% RunPCA() %>% RunUMAP( dims = 1:30) %>% FindNeighbors( dims = 1:30) %>% FindClusters(resolution = 0.4)
+
+remove(i, integration.list, integration.features, integration.anchors)
+```
+
+Read in processed object
+```{r}
+CTRL= readRDS('seurat_objects/CTRL.rds')
+```
+
+
+## Extended figure 1.c
+```{r}
+DimPlot(CTRL, split.by = 'line', group.by = 'replicate', shuffle = T)
+```
+
+## Extended figure 1.d
+```{r}
+FeaturePlot(CTRL, features = c( 'VIM', 'SOX2', 'FOXG1','MKI67', 'DCX', 'EOMES', 'NEUROD2', 'NEUROD6', 'BCL11B', 'TCF7L2', 'GFAP', 'SPARCL1', 'RSPO2','RSPO3', 'TTR', 'DCT', 'SFRP2','COL1A2',  'RELN'  ), slot = 'data', max.cutoff = 2, ncol = 5) * NoLegend() * NoAxes()
+```
+
+Important and prepare downloaded reference data (REF: Kanton et al, Nature 2019)
+```{r eval=FALSE, include=FALSE}
+# Read in cell-level metadata
+kanton_meta = read.table('Kanton_et_al_2019/metadata_human_cells.tsv', sep = '\t', header = T)
+rownames(kanton_meta)= paste0(kanton_meta$Sample, '_',kanton_meta$Barcode)
+
+# Read in gene names
+kanton_gene = read.table('Kanton_et_al_2019/genes_GRCh38.txt', sep = '\t', header = F)
+
+# Read in gene expression matrix
+kanton_mtx = readMM('Kanton_et_al_2019/human_cell_counts_GRCh38.mtx')
+
+colnames(kanton_mtx) = rownames(kanton_meta)
+rownames(kanton_mtx) = kanton_gene$V2
+
+# Create Seurat object and perform SCT normalization
+kanton = CreateSeuratObject(counts = kanton_mtx, meta.data = kanton_meta, min.cells = 50, min.features = 3) %>% SCTransform()
+remove(kanton_meta, kanton_gene, kanton_mtx)
+```
+
+Label transfer from reference to CTRL organoids
+```{r eval=FALSE, include=FALSE}
+DefaultAssay(CTRL) <- 'integrated'
+
+obj.list= list(kanton, CTRL)
+features <- SelectIntegrationFeatures(obj.list)
+anchors <- FindTransferAnchors(reference = kanton, query = CTRL, normalization.method = "SCT",  reference.assay = 'SCT', query.assay = 'integrated',reduction = 'pcaproject', dims = 1:20, features = features, nn.method= 'rann', eps = 0.5, verbose = T)
+
+CTRL[["kanton_PredCellType"]] <- TransferData(anchorset = anchors, refdata = kanton$PredCellType, prediction.assay = TRUE, weight.reduction = 'pcaproject', dims = 1:20, eps = 0.5 )
+
+CTRL[["kanton_FullLineage"]] <- TransferData(anchorset = anchors, refdata = kanton$cl_FullLineage, prediction.assay = TRUE, weight.reduction = 'pcaproject', dims = 1:20, eps = 0.5 )
+remove(kanton, obj.list, features, anchors)
+```
+
+## Supplementary figure 1.a
+```{r}
+FeaturePlot(CTRL, c('cycling dorsal progenitors', 'RGCs 3','IPs and early cortical neurons', 'cortical neurons 1', 'midbrain/hindbrain cells', 'Astrocyte', 'Mural', 'retina progenitors', 'Choroid'), order = T) * NoLegend() * NoAxes()
+```
+
+Annotate clusters
+```{r eval=FALSE, include=FALSE}
+Idents(CTRL) <- 'seurat_clusters'
+CTRL <- RenameIdents(
+  object = CTRL,
+  '0'= 'Radial Glia G1/S Phase',
+  '1'= 'Immature Cortical Neurons 1',
+  '2'= 'Immature Cortical Neurons 2', #need better annotation
+  '3'= 'Thalamic Neurons',
+  '4'= 'Intermediate Progenitors',
+  '5'= 'Radial Glia G2M Phase',
+  '6'= 'Astroglia',
+  '7'= 'Mature Cortical Neurons',
+  '8'= 'Progenitors', #need better annotation
+  '9'= 'Cortical Hem/Choroid Plexus', 
+  '10'= 'Hindbrain Neurons 1',
+  '11'= 'Retinal Progenitors',
+  '12'= 'Hindbrain Neurons 2', #need better annotation
+  '13'= 'Mural Cells',
+  '14'= 'Retinal Pigmented Cells',
+  '15'= 'Cajal Retzius Neurons')
+
+CTRL$legend = Idents(CTRL)
+```
+
+## Figure 1.d
+```{r}
+color_palette=c('Immature Cortical Neurons 1'="#00133E", 'Immature Cortical Neurons 2'="#16365C", 'Mature Cortical Neurons'="#2D597A", 'Hindbrain Neurons 1'="#447C98", 'Thalamic Neurons'="#5A9FB6", 'Hindbrain Neurons 2'="#71C2D4", 'Cajal Retzius Neurons'="#87E5F2", 'Radial Glia G2M Phase'='#b7245c', 'Progenitors'='#8f0034', 'Radial Glia G1/S Phase'='#de598c', 'Intermediate Progenitors'='#7D5AA5', 'Retinal Progenitors'='#f7c548', 'Retinal Pigmented Cells'='#cf9d20', 'Mural Cells'='#060300', 'Cortical Hem/Choroid Plexus'='#FA8405', 'Astroglia'='#808080')
+
+DimPlot(CTRL, cols = color_palette)
+```
+
+# Analysis of control (CTRL), HSV1 1 day post infection (1dpi), 3 days post infection (3dpi) and acyclovir (ACV) treated organoids
+
+Read digital gene expression matrices (generated with Spacemake) for CTRL samples and create Seurat objects for each sample keeping barcodes with at least 250 detected genes and genes detected at least 5 cells
+```{r eval=FALSE, include=FALSE}
+Xmoo1_inf1dpi_1 = read.table(file = 'digital_gene_expression/scRNAseq_spacemake/Xmoo1_inf1dpi_1.txt.gz', sep = '', row.names = 1, header = T) %>% CreateSeuratObject(min.cells = 5, min.features = 250, project = 'Xmoo1_inf1dpi_1', assay = 'RNA') 
+Xmoo1_inf1dpi_1$line = 'iPSC line 1' 
+Xmoo1_inf1dpi_1$replicate = 'Rep. 1' 
+Xmoo1_inf1dpi_1$condition = 'HSV-1 (1dpi)' 
+
+Xmoo1_inf1dpi_2 = read.table(file = 'digital_gene_expression/scRNAseq_spacemake/Xmoo1_inf1dpi_2.txt.gz', sep = '', row.names = 1, header = T) %>% CreateSeuratObject(min.cells = 5, min.features = 250, project = 'Xmoo1_inf1dpi_2', assay = 'RNA') 
+Xmoo1_inf1dpi_2$line = 'iPSC line 1' 
+Xmoo1_inf1dpi_2$replicate = 'Rep. 2' 
+Xmoo1_inf1dpi_2$condition = 'HSV-1 (1dpi)' 
+
+Xmoo1_inf3dpi_1 = read.table(file = 'digital_gene_expression/scRNAseq_spacemake/Xmoo1_inf3dpi_1.txt.gz', sep = '', row.names = 1, header = T) %>% CreateSeuratObject(min.cells = 5, min.features = 250, project = 'Xmoo1_inf3dpi_1', assay = 'RNA') 
+Xmoo1_inf3dpi_1$line = 'iPSC line 1' 
+Xmoo1_inf3dpi_1$replicate = 'Rep. 1' 
+Xmoo1_inf3dpi_1$condition = 'HSV-1 (3dpi)' 
+
+Xmoo1_inf3dpi_2 = read.table(file = 'digital_gene_expression/scRNAseq_spacemake/Xmoo1_inf3dpi_2.txt.gz', sep = '', row.names = 1, header = T) %>% CreateSeuratObject(min.cells = 5, min.features = 250, project = 'Xmoo1_inf3dpi_2', assay = 'RNA') 
+Xmoo1_inf3dpi_2$line = 'iPSC line 1' 
+Xmoo1_inf3dpi_2$replicate = 'Rep. 2' 
+Xmoo1_inf3dpi_2$condition = 'HSV-1 (3dpi)' 
+
+Xmoo1_inf3dpiACV_1 = read.table(file = 'digital_gene_expression/scRNAseq_spacemake/Xmoo1_inf3dpiACV_1.txt.gz', sep = '', row.names = 1, header = T) %>% CreateSeuratObject(min.cells = 5, min.features = 250, project = 'Xmoo1_inf3dpiACV_1', assay = 'RNA') 
+Xmoo1_inf3dpiACV_1$line = 'iPSC line 1' 
+Xmoo1_inf3dpiACV_1$replicate = 'Rep. 1' 
+Xmoo1_inf3dpiACV_1$condition = 'HSV-1 (3dpi) +ACV' 
+
+Xmoo1_inf3dpiACV_2 = read.table(file = 'digital_gene_expression/scRNAseq_spacemake/Xmoo1_inf3dpiACV_2.txt.gz', sep = '', row.names = 1, header = T) %>% CreateSeuratObject(min.cells = 5, min.features = 250, project = 'Xmoo1_inf3dpiACV_2', assay = 'RNA') 
+Xmoo1_inf3dpiACV_2$line = 'iPSC line 1' 
+Xmoo1_inf3dpiACV_2$replicate = 'Rep. 2' 
+Xmoo1_inf3dpiACV_2$condition = 'HSV-1 (3dpi)' 
+
+Gline_inf1dpi_1 = read.table(file = 'digital_gene_expression/scRNAseq_spacemake/Gline_inf1dpi_1.txt.gz', sep = '', row.names = 1, header = T) %>% CreateSeuratObject(min.cells = 5, min.features = 250, project = 'Gline_inf1dpi_1', assay = 'RNA') 
+Gline_inf1dpi_1$line = 'iPSC line 2' 
+Gline_inf1dpi_1$replicate = 'Rep. 1' 
+Gline_inf1dpi_1$condition = 'HSV-1 (1dpi)' 
+
+Gline_inf1dpi_2 = read.table(file = 'digital_gene_expression/scRNAseq_spacemake/Gline_inf1dpi_2.txt.gz', sep = '', row.names = 1, header = T) %>% CreateSeuratObject(min.cells = 5, min.features = 250, project = 'Gline_inf1dpi_2', assay = 'RNA') 
+Gline_inf1dpi_2$line = 'iPSC line 1' 
+Gline_inf1dpi_2$replicate = 'Rep. 2' 
+Gline_inf1dpi_2$condition = 'HSV-1 (1dpi)' 
+
+Gline_inf3dpi_1 = read.table(file = 'digital_gene_expression/scRNAseq_spacemake/Gline_inf3dpi_1.txt.gz', sep = '', row.names = 1, header = T) %>% CreateSeuratObject(min.cells = 5, min.features = 250, project = 'Gline_inf3dpi_1', assay = 'RNA') 
+Gline_inf3dpi_1$line = 'iPSC line 2' 
+Gline_inf3dpi_1$replicate = 'Rep. 1' 
+Gline_inf3dpi_1$condition = 'HSV-1 (3dpi)' 
+
+Gline_inf3dpi_2 = read.table(file = 'digital_gene_expression/scRNAseq_spacemake/Gline_inf3dpi_2.txt.gz', sep = '', row.names = 1, header = T) %>% CreateSeuratObject(min.cells = 5, min.features = 250, project = 'Gline_inf3dpi_2', assay = 'RNA') 
+Gline_inf3dpi_2$line = 'iPSC line 1' 
+Gline_inf3dpi_2$replicate = 'Rep. 2' 
+Gline_inf3dpi_2$condition = 'HSV-1 (3dpi)' 
+
+Gline_inf3dpiACV_1 = read.table(file = 'digital_gene_expression/scRNAseq_spacemake/Gline_inf3dpiACV_1.txt.gz', sep = '', row.names = 1, header = T) %>% CreateSeuratObject(min.cells = 5, min.features = 250, project = 'Gline_inf3dpiACV_1', assay = 'RNA') 
+Gline_inf3dpiACV_1$line = 'iPSC line 2' 
+Gline_inf3dpiACV_1$replicate = 'Rep. 1' 
+Gline_inf3dpiACV_1$condition = 'HSV-1 (3dpi) +ACV' 
+
+Gline_inf3dpiACV_2 = read.table(file = 'digital_gene_expression/scRNAseq_spacemake/Gline_inf3dpiACV_2.txt.gz', sep = '', row.names = 1, header = T) %>% CreateSeuratObject(min.cells = 5, min.features = 250, project = 'Gline_inf3dpiACV_2', assay = 'RNA') 
+Gline_inf3dpiACV_2$line = 'iPSC line 1' 
+Gline_inf3dpiACV_2$replicate = 'Rep. 2' 
+Gline_inf3dpiACV_2$condition = 'HSV-1 (3dpi) +ACV' 
+```
+
+Create a single integrated Seurat object with all 16 samples (2 replicates for 2 cell lines per 4 conditions) after correcting for condition- and cell line-specific effects
+```{r eval=FALSE, include=FALSE}
+all_timepoints= merge(Xmoo1_CTRL_1_exonic, list(Xmoo1_CTRL_2_exonic, Xmoo1_inf1dpi_1, Xmoo1_inf1dpi_2,  Xmoo1_inf3dpi_1, Xmoo1_inf3dpi_2,  Xmoo1_inf3dpiACV_1, Xmoo1_inf3dpiACV_2, 
+                                                Gline_CTRL_1_exonic, Gline_CTRL_2_exonic, Gline_inf1dpi_1, Gline_inf1dpi_2,  Gline_inf3dpi_1, Gline_inf3dpi_2,  Gline_inf3dpiACV_1, Gline_inf3dpiACV_2))
+
+all_timepoints$line_condition= paste0(all_timepoints$line, '_', all_timepoints$condition)
+Idents(all_timepoints) = 'line_condition'
+
+integration.list <- SplitObject(all_timepoints)
+
+for (i in 1:length(integration.list)) {
+    integration.list[[i]] <- SCTransform(integration.list[[i]], verbose = T,method= 'glmGamPoi', assay = 'RNA', new.assay.name = 'SCT', vst.flavor='v2')
+}
+integration.features <- SelectIntegrationFeatures(object.list = integration.list, nfeatures = 3000)
+
+integration.list <- PrepSCTIntegration(object.list = integration.list, anchor.features = integration.features, verbose = T)
+integration.anchors <- FindIntegrationAnchors(object.list = integration.list, normalization.method = "SCT", anchor.features = integration.features, verbose = T)
+
+all_timepoints <- IntegrateData(anchorset = integration.anchors, normalization.method = "SCT",  verbose = T)
+DefaultAssay(all_timepoints) <- 'integrated'
+
+remove(i, integration.list, integration.features, integration.anchors)
+```
+
+Perform dimensionality reduction and clustering with 30 principal components and default parameters
+```{r eval=FALSE, include=FALSE}
+all_timepoints <- all_timepoints  %>% RunPCA( verbose = T) %>% RunUMAP( dims = 1:30, verbose = T) %>% FindNeighbors( dims = 1:30, verbose = T) %>% FindClusters( verbose = T)
+```
+
+Inspect transcript counts (nCount) and % of mitochondrial transcripts (percent_MT) to identify low quality clusters
+```{r eval=FALSE, include=FALSE}
+VlnPlot(all_timepoints, 'nCount_RNA_exonic', y.max = 2000, pt.size = 0)+ NoLegend()
+VlnPlot(all_timepoints, 'percent_MT', y.max = 2000, pt.size = 0)+ NoLegend()
+```
+
+Remove low quality clusters 6 (low nCount) and 10 (high mito) and select top 75% cells by nCount per cluster
+```{r eval=FALSE, include=FALSE}
+all_timepoints$barcode= colnames(all_timepoints)
+top75= all_timepoints@meta.data[!all_timepoints$seurat_clusters %in% c(6, 10),] %>% group_by(seurat_clusters) %>% top_frac(n = 0.75, wt = nCount_RNA_exonic)
+all_timepoints = subset(all_timepoints, cells=top75$barcode)
+```
+
+Re-run integration, dimensionality reduction and clustering
+```{r eval=FALSE, include=FALSE}
+Idents(all_timepoints) = 'line_condition'
+integration.list <- SplitObject(all_timepoints)
+
+for (i in 1:length(integration.list)) {
+    integration.list[[i]] <- SCTransform(integration.list[[i]],method= 'glmGamPoi', assay = 'RNA', new.assay.name = 'SCT', vst.flavor='v2')
+}
+integration.features <- SelectIntegrationFeatures(object.list = integration.list, nfeatures = 3000)
+
+integration.list <- PrepSCTIntegration(object.list = integration.list, anchor.features = integration.features)
+integration.anchors <- FindIntegrationAnchors(object.list = integration.list, normalization.method = "SCT", anchor.features = integration.features)
+
+all_timepoints <- IntegrateData(anchorset = integration.anchors, normalization.method = "SCT")
+DefaultAssay(all_timepoints) <- 'integrated'
+all_timepoints <- all_timepoints  %>% RunPCA() %>% RunUMAP( dims = 1:30) %>% FindNeighbors( dims = 1:30) %>% FindClusters(resolution = 0.8)
+
+remove(i, integration.list, integration.features, integration.anchors)
+```
+
+Quantify the % of CTRL cells (condition) in each cluster
+```{r eval=FALSE, include=FALSE}
+round(prop.table(table(all_timepoints$seurat_clusters, all_timepoints$condition=='CTRL'), margin=1)*100, digits=1)
+```
+
+Add annotations of CTRL cells
+```{r eval=FALSE, include=FALSE}
+all_timepoints$legend_CTRL = CTRL$legend
+```
+
+Quantify the % of CTRL cell type (legend) in each cluster
+```{r eval=FALSE, include=FALSE}
+round(prop.table(table(all_timepoints$legend_CTRL, all_timepoints$seurat_clusters), margin=1)*100, digits=1)
+```
+
+Identify marker genes for each cluster
+```{r eval=FALSE, include=FALSE}
+all_timepoints_markers= FindAllMarkers(all_timepoints, only.pos = T)
+```
+
+
+Cluster annotation strategy:
+1. Clusters composed by at least 33% of CTRL cells (as CTRL cell represent 33% of the dataset) take the annotation of the majority of the CTRL cells
+  0: Mixed Neurons (35+31%)
+  3: Cortical Neurons (56 Immature, 34 Mature %)
+  4: RG (89%)
+  5: Astroglia (68.5%)
+  8: RG (76.5%)
+  12: IPC (86%)
+  13: RG proliferating (97%)
+  15: Thalamic (54% Thalamic)
+  18: Mural (95%)
+
+2. Clusters that contain more than than 50% of the CTRL cell types from a specific cluster and at least 10% of CTRL cells
+  7: Retinal Progenitors (90%) [10% CTRL]
+  11: Thalamic Neurons (54%) [26% CTRL]
+  14: Choroid (94%) [28% CTRL]
+  16: Hindbrain (65%) [22% CTRL]
+  17: Retinal Pigmented (81%) [22% CTRL]
+
+3. Missing clusters annotated on markers
+  1: Infected
+  2: Infected
+  6: Infected
+  9: Infected
+  10: Hindbrain (HOX genes: HOXA5, B3-5-6)
+
+```{r include=FALSE}
+Idents(all_timepoints) <- 'seurat_clusters'
+all_timepoints <- RenameIdents(
+  object = all_timepoints,
+  '0'= 'Mixed Neurons',
+  '1'= 'Highly infected 1',
+  '2'= 'Highly infected 2',
+  '3'= 'Cortical Neurons',
+  '4'= 'Radial Glia G1 Phase',
+  '5'= 'Astroglia',
+  '6'= 'Highly infected 3',
+  '7'= 'Retinal Progenitors',
+  '8'= 'Radial Glia S Phase', 
+  '9'= 'Highly infected 4', 
+  '10'= 'Hindbrain Neurons 1',
+  '11'= 'Thalamic Neurons 1',
+  '12'= 'Intermediate Progenitors',
+  '13'= 'Radial Glia G2M Phase',
+  '14'= 'Cortical Hem/Choroid Plexus',
+  '15'= 'Thalamic Neurons 2',
+  '16'= 'Hindbrain Neurons 2',
+  '17'= 'Retinal Pigmented Cells',
+  '18'= 'Mural Cells')
+
+all_timepoints$legend = Idents(all_timepoints)
+```
+
+CTRL cells in infected clusters have lower UMIs than CTRL cells in other clusters
+```{r eval=FALSE, include=FALSE}
+ggplot(all_timepoints@meta.data[all_timepoints$condition=='CTRL',], aes(x= legend, y= nCount_RNA)) + geom_boxplot() + ylim(c(0, 3000)) + RotatedAxis()
+```
+
+CTRL cells in infected clusters have lower UMIs than infected cells in Highly infected clusters
+```{r eval=FALSE, include=FALSE}
+ggplot(all_timepoints@meta.data, aes(x= seurat_clusters, y= nCount_RNA, fill=condition)) + geom_boxplot() + ylim(c(0, 3000))
+```
+
+Removing CTRL cells from 'Highly infected' clusters
+```{r eval=FALSE, include=FALSE}
+all_timepoints =subset(all_timepoints, cells = colnames(all_timepoints)[!(all_timepoints$condition== 'CTRL' & all_timepoints$seurat_clusters %in% c(1, 2, 6, 9) )])
+```
+
+Import processed object
+```{r}
+saveRDS(all_timepoints, 'seurat_objects/all_timepoints.rds')
+```
+
+
+## Figure 2.a
+```{r}
+color_palette=c( 'Mixed Neurons'="#00133E", 'Thalamic Neurons 2'="#16365C",'Cortical Neurons'="#2D597A",'Hindbrain Neurons 1'="#447C98",'Thalamic Neurons 1'="#5A9FB6",'Hindbrain Neurons 2'="#71C2D4",'Radial Glia G2M Phase'='#b7245c','Radial Glia S Phase'='#8f0034', 'Radial Glia G1 Phase'='#de598c','Intermediate Progenitors'='#7D5AA5','Retinal Progenitors'='#f7c548','Retinal Pigmented Cells'='#cf9d20','Mural Cells'='#060300','Cortical Hem/Choroid Plexus'='#FA8405','Astroglia'='808080','Highly infected 1'='#23A17B','Highly infected 2'='#17B67E','Highly infected 3'='#0CCA80','Highly infected 4'='#005225')
+
+DimPlot(all_timepoints, cols = color_palette)
+```
+
+## Extended figure 3.c
+```{r}
+DimPlot(all_timepoints, split.by = 'line_condition', group.by = 'replicate', shuffle = T, ncol = 4) 
+```
+
+## Figure 3.b
+```{r}
+all_timepoints$legend= factor(all_timepoints$legend, levels = names(color_palette))
+
+ggplot(all_timepoints@meta.data, aes(x=condition, fill=legend)) + 
+  geom_bar(position='fill') + 
+  scale_fill_manual(values=color_palette) + 
+  theme_bw() + 
+  xlab('') + ylab('Cluster %') +
+  scale_y_continuous(labels = scales::percent_format())
+```
+
+```{r}
+extended_3b= all_timepoints@meta.data %>% group_by(condition, legend) %>% summarise(count= length(condition)) %>% pivot_wider(names_from = legend, values_from = count, values_fill = 0) %>% as.data.frame()
+
+rownames(extended_3b)= extended_3b$condition
+extended_3b$condition= NULL
+
+write.csv(round(extended_3b/rowSums(extended_3b)*100, digits = 1), '../gene_lists/source_extended_Figure_3b.csv')
+```
+
+
+## Extended figure 4.a
+```{r}
+all_timepoints$sample= paste0(all_timepoints$condition, '_', all_timepoints$replicate)
+
+ggplot(all_timepoints@meta.data, aes(x=sample, fill=legend)) + 
+  geom_bar(position='fill') + scale_fill_manual(values=color_palette) + 
+  theme_bw() + 
+  xlab('') + ylab('Cluster %') +
+  scale_y_continuous(labels = scales::percent_format()) + facet_wrap('line')
+```
+
+Compute viral load (% of viral transcripts) per cell
+```{r eval=FALSE, include=FALSE}
+# Identify viral genes
+viral_genes= grep("^US[0-9]{1,2}A{0,1}[0-9]{0,1}|^UL[0-9]{1,2}[A]{0,1}[0-9]{0,1}|^R[LS][12]|^LAT|^GFP$",
+                                   rownames(all_timepoints), value="TRUE", perl=TRUE)
+
+# Extract viral gene expression
+viral_expression= all_timepoints@assays$RNA[viral_genes, ]
+
+# Count viral transcripts per cell
+all_timepoints$nCount_viral= colSums(viral_expression)
+
+# Compute viral load
+all_timepoints$viral_load = all_timepoints$nCount_viral/all_timepoints$nCount_RNA*100
+```
+
+## Figure 3.c
+```{r}
+viral_load_matrix= all_timepoints@meta.data %>% group_by(legend, condition) %>% summarise(viral_load= round(median(viral_load), digits = 1)  ) %>% tidyr::pivot_wider(names_from = condition, values_from = viral_load) %>% as.data.frame()
+
+rownames(viral_load_matrix) = as.character(viral_load_matrix$legend)
+viral_load_matrix$legend= NULL
+
+green_palette= c(colorRampPalette(c("white", "#23A17B"))(10), rep("#23A17B", 60))
+
+pheatmap(viral_load_matrix, cluster_rows = F, cluster_cols = F, display_numbers = T, fontsize_number = 4, number_format = "%.1f",color = green_palette, angle_col = 90, labels_col = c('CTRL', '+HSV-1 1dpi', '+HSV-1 3dpi', '+HSV-1 3dpi +ACV'), na_col = 'white', border_color = 'grey', cellwidth = 12, cellheight = 12, show_rownames = F, main = 'Median viral \n       transcript %', fontsize = 10, fontsize_col = 10)
+```
+
+## Extended figure 4.c
+```{r}
+viral_metadata= all_timepoints@meta.data[, c('viral_load', 'condition','legend')]
+viral_metadata= viral_metadata[order(viral_metadata$condition, viral_metadata$legend ),]
+
+viral_expression= log10(viral_expression[order(rowSums(viral_expression), decreasing = T) , rownames(viral_metadata)]+1)
+
+condition_cols=  c('CTRL'='grey', 'HSV-1 (1dpi)'='#F1B3F4', 'HSV-1 (3dpi)'='#A13FA6', 'HSV-1 (3dpi) +ACV'='#BE64C2')
+
+pheatmap(viral_expression, cluster_rows = F, cluster_cols = F, display_numbers = F, color = colorRampPalette(c("white", "#23A17B"))(100), angle_col = 90, show_rownames = T, main = 'Viral gene expression (log10)', fontsize = 10, fontsize_col = 10, annotation_col = viral_metadata, annotation_colors = list(legend= color_palette, condition= condition_cols ), show_colnames = F)
+```
+Create a Seurat object only with 'Highly infected' cells
+```{r}
+infected_clusters= subset(all_timepoints, cells= colnames(all_timepoints)[grep('Highly infected' ,all_timepoints$legend)]) 
+DefaultAssay(infected_clusters) = 'SCT'
+```
+
+## Extended figure 4.d
+```{r}
+ggplot(infected_clusters@meta.data, aes(x=legend, fill= condition))+geom_bar(position = 'fill') + 
+  scale_fill_manual(values = c( '#F1B3F4', '#A13FA6', '#BE64C2')) +
+  xlab('') + ylab('Condition %') +
+  scale_y_continuous(labels = scales::percent_format())
+```
+
+## Extended figure 4.e
+```{r}
+DotPlot(infected_clusters , features = c( 'VIM', 'SOX2', 'FOXG1','MKI67', 'DCX', 'EOMES', 'NEUROD2', 'NEUROD6', 'BCL11B', 'TCF7L2' ,'GFAP', 'SPARCL1', 'RSPO2', 'RSPO3', 'TTR', 'DCT', 'SFRP2','COL1A2','RELN'),  group.by = 'legend', scale=T )
+```
+
+## Extended figure 4.f
+```{r}
+VlnPlot(infected_clusters, features = c('viral_load'), group.by = 'legend', cols =color_palette) + NoLegend() + ggtitle('') + ylab('Viral load (% UMI)') + xlab('')
+remove(infected_clusters)
+```
+
+Store condition as a 1-hot encoded assay
+```{r}
+sample_assay = pivot_wider(data.frame(condition=all_timepoints$condition, values= 1, cells= colnames(all_timepoints)), names_from = 'condition', values_from = values, values_fill = 0 )
+sample_assay = data.frame(sample_assay[, 2:5], row.names = sample_assay$cells)
+sample_assay= sample_assay/colSums(sample_assay)
+
+all_timepoints[["condition_assay"]] =  CreateAssayObject(counts = t(sample_assay) )
+```
+
+## Figure 3.d
+```{r}
+DefaultAssay(all_timepoints) = 'condition_assay'
+plot_density(object = all_timepoints, features = rownames(all_timepoints) )
+all_timepoints@assays$condition_assay=NULL
+```
+
+## Supplementary figure 2.a
+```{r}
+VlnPlot(all_timepoints, features ='STMN2', group.by = 'condition', cols = condition_cols, assay = 'RNA', log=T, slot = 'data') + NoLegend() +ggtitle('') + ylab('Log normalized counts')
+```
+
+Identify differentially expressed genes in each cluster for selected clusters
+```{r}
+# Prepare dataframe to store results
+DE_genes = data.frame(logFC= NA, logCPM= NA,F= NA, PValue = NA, cluster=NA, gene =NA, contrast= NA, adjPvalue= NA )
+
+# Set sample name order
+all_timepoints$line_condition_replicate = paste0(all_timepoints$line, '_', all_timepoints$condition, '_', all_timepoints$replicate)
+all_timepoints$line_condition_replicate = factor(all_timepoints$line_condition_replicate, levels= c('iPSC line 2_CTRL_Rep. 1', 'iPSC line 2_CTRL_Rep. 2','iPSC line 1_CTRL_Rep. 1', 'iPSC line 1_CTRL_Rep. 2',
+                                                                      'iPSC line 2_HSV-1 (1dpi)_Rep. 1', 'iPSC line 2_HSV-1 (1dpi)_Rep. 2', 'iPSC line 1_HSV-1 (1dpi)_Rep. 1', 'iPSC line 1_HSV-1 (1dpi)_Rep. 2',
+                                                                      'iPSC line 2_HSV-1 (3dpi)_Rep. 1', 'iPSC line 2_HSV-1 (3dpi)_Rep. 2', 'iPSC line 1_HSV-1 (3dpi)_Rep. 1', 'iPSC line 1_HSV-1 (3dpi)_Rep. 2',
+                                                                      'iPSC line 2_HSV-1 (3dpi) +ACV_Rep. 1', 'iPSC line 2_HSV-1 (3dpi) +ACV_Rep. 2', 'iPSC line 1_HSV-1 (3dpi) +ACV_Rep. 1', 'iPSC line 1_HSV-1 (3dpi) +ACV_Rep. 2'))
+
+all_timepoints$barcode= colnames(all_timepoints)
+
+for (i in levels(all_timepoints$legend)[c(1,3, 5, 9)] ){
+  # Subsample to 100 cells per organoid per cluster to correct for different abundances across conditions
+  random_100_subset = all_timepoints@meta.data[all_timepoints$legend == i, ] %>% group_by(line_condition_replicate) %>% sample_n(100, replace= T)
+  cells= random_100_subset$barcode
+  cluster_group= random_100_subset$line_condition_replicate
+  
+  # Sum gene expression across cells in each organoid to generate a pseudobulk gene expression matrix 
+  pseudobulk= t(rowsum(x = t(as.matrix(all_timepoints@assays$RNA@counts[, cells])), group = cluster_group)) 
+  
+  # Define sample metadata
+  condition = factor(c('CTRL','CTRL','CTRL','CTRL', 'inf1dpi','inf1dpi','inf1dpi','inf1dpi', 'inf3dpi', 'inf3dpi','inf3dpi', 'inf3dpi', 'inf3dpi_ACV','inf3dpi_ACV', 'inf3dpi_ACV','inf3dpi_ACV'), 
+                         levels= c('CTRL','inf1dpi', 'inf3dpi', 'inf3dpi_ACV'))
+  line= factor(c('Gline','Gline','Xmoo1','Xmoo1', 'Gline','Gline','Xmoo1','Xmoo1', 'Gline', 'Gline','Xmoo1', 'Xmoo1', 'Gline','Gline', 'Xmoo1','Xmoo1'), 
+                         levels= c('Gline','Xmoo1'))
+  
+  # Define experimental design and remove cell-line specific effects
+  design = model.matrix(~line + condition)
+  
+  # Define comparisons to assess
+  my.contrasts <- makeContrasts(
+    inf1dpivsCTRL = conditioninf1dpi,
+    inf3dpivsCTRL = conditioninf3dpi,
+    inf3dpi_ACVvsCTRL = conditioninf3dpi_ACV,
+    inf3dpivsinf1dpi= conditioninf3dpi - conditioninf1dpi, 
+    inf3dpi_ACVvsinf3dpi= conditioninf3dpi_ACV - conditioninf3dpi,
+    inf3dpi_ACVvsinf1dpi= conditioninf3dpi_ACV - conditioninf1dpi,
+    levels = colnames(design))
+  
+  # Create edgeR object
+  DE_object = DGEList(counts=pseudobulk,group=condition )
+  
+  # Filter lowly detected, potentially noisy genes
+  DE_object = DE_object[filterByExpr(DE_object, min.count= 10, min.total.count= 50), , keep.lib.sizes=FALSE] # remove genes with >100 tpm in at least 2 samples
+  
+  # Adjust by library size
+  DE_object$samples$lib.size <- colSums(DE_object$counts)
+  DE_object <- calcNormFactors(DE_object)
+  
+  # Fit statistical model
+  DE_object = estimateDisp(DE_object, design)
+  DE_object =  glmQLFit(DE_object, design)
+  
+  # Prepare cluster-level dataframe to store results
+  cluster_DE_genes = data.frame(logFC= NA, logCPM= NA, F =NA, PValue = NA, cluster=NA, gene =NA, contrast= NA, adjPvalue= NA)
+  
+  for (contrast in colnames(my.contrasts)){
+    
+    # Compute differentially expressed genes
+    cluster_comparison= glmQLFTest(DE_object, contrast=my.contrasts[,contrast])$table
+    
+    # Store metadata
+    cluster_comparison$cluster = i
+    cluster_comparison$gene = rownames(cluster_comparison)
+    cluster_comparison$contrast =contrast
+    
+    # Compute bonferroni-adjusted p value
+    cluster_comparison$adjPvalue = p.adjust(cluster_comparison$PValue)
+    
+    # Add to result data frame
+    cluster_DE_genes = rbind.data.frame(cluster_DE_genes, cluster_comparison)
+    cluster_DE_genes= cluster_DE_genes[!is.na(cluster_DE_genes$gene), ]
+  }
+  
+  # Add to global result dataframe
+  DE_genes = rbind.data.frame(DE_genes, cluster_DE_genes)
+}
+
+# Exclude viral genes
+DE_genes$viral = DE_genes$gene %in% viral_genes
+DE_genes= DE_genes[!is.na(DE_genes$gene), ]
+
+# Save results to file
+write.csv(DE_genes, 'gene_lists/differentially_expressed_genes.csv')
+```
+
+Define function to run gene set enrichment analysis on differential expressed genes in each comparison and for each cluster ad save the results as separate RDS files
+```{r}
+run_GSEA_edgeR = function(DE_genes_csv, species = 'Homo sapiens', category, subcategory = NULL, cluster, contrasts, cluster_name,scoreType = "std") {
+  
+  # Check if output directory exist and create it if it doesn't
+  if (file.exists(paste0('GSEA/', cluster_name))== F){dir.create(paste0('GSEA/', cluster_name))}
+  
+  # Read in differential expressed genes
+  differential_genes = read.csv(DE_genes_csv)
+  
+  # Define gene set database
+  msigdbr_t2g = msigdbr(species = species, category = category, subcategory = subcategory) %>% dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+  
+  # Prepare list for storing results of each comparison
+  contrast_gsea = list()
+  
+  
+  for (contrast in contrasts) {
+    
+    # Define differential genes and order them according to decreasing fold change
+    genes = differential_genes[differential_genes$contrast == contrast & differential_genes$cluster == cluster,]
+    genes = genes[order(genes$logFC, decreasing = T),]
+    genes_for_GSEA = genes$logFC
+    names(genes_for_GSEA) = genes$gene
+    
+    # Compute gene set enrichments
+    if(any(genes$gene %in% msigdbr_t2g$gene_symbol)){contrast_gsea[as.character(contrast)] = GSEA(geneList = genes_for_GSEA, TERM2GENE = msigdbr_t2g, scoreType= scoreType)}
+    }
+    
+    # Save file to disk
+    saveRDS(contrast_gsea, paste0('GSEA/', cluster_name,'/', category, '_', subcategory, '.rds'))
+}
+```
+
+Run GSEA for the HALLMARK database
+```{r}
+dir.create('GSEA')
+for (cluster in levels(all_timepoints$legend)[c(1,3, 5, 9)]){
+    run_GSEA_edgeR(DE_genes_csv ='gene_lists/differentially_expressed_genes.csv', category = 'H', 
+                   contrasts= c('inf1dpivsCTRL', '+HSV-1 3dpi vs CTRL', 'inf3dpi_ACVvsCTRL'), 
+                   cluster = cluster, cluster_name = cluster)}
+```
+
+Read in GSEA results
+```{r}
+GSEA_results = data.frame(ID= NA, NES= NA, p.adjust =NA, contrast = NA, cluster=NA)
+
+for (cluster in levels(all_timepoints$legend)[c(1,3, 5, 9)]){
+  cluster_rds = readRDS(paste0('GSEA/', cluster,'/H_.rds'))
+  
+  cluster_enrichments= data.frame(ID= NA, NES= NA, p.adjust =NA, contrast = NA)
+  if(!is.null(cluster_rds$inf1dpivsCTRL)){ if(nrow(cluster_rds$inf1dpivsCTRL@result)>0){cluster_enrichments = rbind.data.frame(cluster_enrichments, data.frame(cluster_rds$inf1dpivsCTR@result[, c('ID', 'NES', 'p.adjust')], contrast= 'inf1dpivsCTRL'))}}
+  if(!is.null(cluster_rds$inf3dpivsCTRL)){if(nrow(cluster_rds$inf3dpivsCTRL@result)>0){cluster_enrichments = rbind.data.frame(cluster_enrichments, data.frame(cluster_rds$inf3dpivsCTR@result[, c('ID', 'NES', 'p.adjust')], contrast= 'inf3dpivsCTRL' ))}}
+  if(!is.null(cluster_rds$inf3dpi_ACVvsCTRL)){if(nrow(cluster_rds$inf3dpi_ACVvsCTRL@result)>0){cluster_enrichments = rbind.data.frame(cluster_enrichments, data.frame(cluster_rds$inf3dpi_ACVvsCTRL@result[, c('ID', 'NES', 'p.adjust')], contrast= 'inf3dpi_ACVvsCTRL' ))}}
+    
+  cluster_enrichments$cluster= cluster
+  GSEA_results = rbind.data.frame(GSEA_results, cluster_enrichments)
+}
+
+# Clean and polish labels
+GSEA_results= GSEA_results[!is.na(GSEA_results$ID), ]
+GSEA_results$ID= gsub('HALLMARK_', '', GSEA_results$ID)
+GSEA_results$ID= gsub('_', ' ', GSEA_results$ID)
+GSEA_results$ID= gsub('_', ' ', GSEA_results$ID)
+GSEA_results$ID= stringr::str_to_sentence(GSEA_results$ID)
+GSEA_results$ID= gsub('nfkb', 'NFkB', GSEA_results$ID)
+GSEA_results$ID= gsub('Tnfa', 'TNFa', GSEA_results$ID)
+GSEA_results$ID= gsub('Uv', 'UV', GSEA_results$ID)
+GSEA_results$ID= gsub('Mtorc', 'mTORC', GSEA_results$ID)
+GSEA_results$ID= gsub('Dna', 'DNA', GSEA_results$ID)
+```
+
+## Figure 4.a
+```{r}
+# Define gene set order based on the most frequently up or down regulated clusters
+gene_set_stats=GSEA_results %>% group_by(ID) %>% summarise(positive = sum(NES >0), negative= sum(NES<0)) %>% as.data.frame()
+gene_set_stats= gene_set_stats[order( gene_set_stats$positive, -gene_set_stats$negative, decreasing = T ),]
+GSEA_results$ID= factor(GSEA_results$ID, levels = rev(gene_set_stats$ID))
+
+# Define cluster, gene set and comparison order
+GSEA_results$contrast = factor(GSEA_results$contrast, levels= c('inf1dpivsCTRL', 'inf3dpivsCTRL', 'inf3dpi_ACVvsCTRL'))
+GSEA_results$cluster= factor(GSEA_results$cluster, levels = c('Radial Glia G1 Phase', 'Cortical Neurons', 'Mixed Neurons', 'Thalamic Neurons 1'))
+
+# Compute -log10 p values
+GSEA_results$`-log10 adj. p-value`= -log10(GSEA_results$p.adjust)
+
+ggplot(GSEA_results,
+      aes(x = contrast, y = ID, col = NES, size = `-log10 adj. p-value`)) +
+      geom_point() +  scale_color_continuous(low = "#00BFC4", high = "#F8766D")+ 
+  scale_color_gradientn(colors = c("dodgerblue", "firebrick"))+
+  facet_wrap('cluster', ncol = 4) +
+  theme_bw() + RotatedAxis()+ xlab('') + ylab('')
+
+```
+
+## Extended figure 4.a
+```{r}
+# Retrieve all genes included in the 'TNFA SIGNALLING VIA NFKB' gene set
+msigdbr_t2g = msigdbr(species = 'Homo sapiens', category = 'H', subcategory = NA) %>% dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame() 
+tnfa_genes= msigdbr_t2g[msigdbr_t2g$gs_name == 'HALLMARK_TNFA_SIGNALING_VIA_NFKB',2]
+
+# Keep only genes detected in the scRNAseq data
+DefaultAssay(all_timepoints)= 'SCT'
+tnfa_genes= tnfa_genes[tnfa_genes %in% rownames(all_timepoints)]
+
+# Retrieve their average gene expression
+all_timepoints$legend_condition= paste0(all_timepoints$legend,' ' ,all_timepoints$condition)
+gene_expression= AverageExpression(subset(all_timepoints, cells = all_timepoints$barcode[all_timepoints$legend %in% levels(all_timepoints$legend)[c(1,3, 5, 9, 16:20)]]),
+                                   assays = 'SCT', slot = 'counts', features = tnfa_genes, group.by = 'legend_condition')
+gene_expression= as.data.frame(gene_expression$SCT)
+gene_expression$gene= rownames(gene_expression)
+
+# Compute the percentage of expressing cells
+pct_expression_data= data.frame(fake_cluster= 1:length(tnfa_genes), row.names = tnfa_genes )
+
+for (cluster in colnames(gene_expression) ){
+  cells= all_timepoints$barcode[all_timepoints$legend_condition==cluster]
+  cluster_expression= as.data.frame(all_timepoints@assays$RNA@counts[tnfa_genes, cells]>0) 
+  pct_expression= data.frame(apply(cluster_expression, MARGIN = 1, FUN = function(x){ round(sum(x)/length(x)*100, digits = 0) } ))
+  colnames(pct_expression)= cluster
+  pct_expression_data= cbind(pct_expression_data, pct_expression)
+}
+remove(cluster, pct_expression)
+
+pct_expression_data=pct_expression_data[, 2:29]
+pct_expression_data$gene= rownames(pct_expression_data)
+pct_expression_data = tidyr::pivot_longer(pct_expression_data, cols = 1:28, values_to = 'pct_expression', names_to = 'cluster')
+
+gene_expression = tidyr::pivot_longer(gene_expression, cols = 1:28, values_to = 'avg_expression', names_to = 'cluster')
+
+plot_data= gene_expression
+plot_data$pct_expression= pct_expression_data$pct_expression
+
+cluster_metadata= all_timepoints@meta.data %>% group_by(legend_condition) %>% summarise(cluster= unique(legend_condition), legend= unique(legend), condition= unique(condition)    )
+
+plot_data= left_join(plot_data, cluster_metadata[, 2:4]) 
+plot_data= plot_data[plot_data$avg_expression >0.1 & plot_data$gene %in% tnfa_genes,]
+plot_data$gene= factor(plot_data$gene, levels = rev(tnfa_genes))
+
+colnames(plot_data)[3:4]= c('Average expression', '% cells expressing')
+
+ggplot(plot_data, aes(y= gene, x= condition, size=`% cells expressing`, col=`Average expression` )) + geom_point() +facet_wrap('legend', nrow = 1)  + theme_bw() + RotatedAxis() + scale_color_gradientn(colors = c("orange", "firebrick")) 
+```
+
+Compute TNFA pathway activity in single cell
+```{r eval=FALSE, include=FALSE}
+# Rank gene by their expression in each single cell
+cells_rankings = AUCell_buildRankings(all_timepoints@assays$SCT@counts, nCores = 40)
+
+# Compute the enrichment of TNFA genes
+cells_AUC = AUCell_calcAUC(list(TNFA=tnfa_genes), cells_rankings, aucMaxRank=nrow(cells_rankings)*0.05, nCores = 40)
+
+# Add TNFa score to metadata
+all_timepoints$tnfa_score = cells_AUC@assays@data$AUC['TNFA',]
+```
+
+## Figure 4.b
+```{r}
+FeaturePlot(all_timepoints, 'tnfa_score', split.by = 'condition', cols = c('dodgerblue', 'firebrick'), order = T, max.cutoff = 0.15, ncol = 4)
+```
+
+## Extended figure 6.b
+```{r}
+FeaturePlot(all_timepoints, 'tnfa_score', split.by = 'line_condition', cols = c('dodgerblue', 'firebrick'), order = T, max.cutoff = 0.15, ncol = 4)* NoAxes()
+```
+
+Importing NFkB direct targets
+```{r}
+tnfa_direct_targets = read.csv('../gene_lists/nfkb_targets.csv')
+tnfa_direct_targets$Human.Gene.Name = gsub("BLIMP1 /PRDM1", "PRDM1", tnfa_direct_targets$Human.Gene.Name)
+tnfa_direct_targets$Human.Gene.Name = gsub("SERPINE1, PAI-1", "SERPINE1", tnfa_direct_targets$Human.Gene.Name)
+
+tnfa_genes= unique(tnfa_direct_targets$Human.Gene.Name[tnfa_direct_targets$Human.Gene.Name %in% rownames(all_timepoints)])
+```
+
+## Supplementary figure 3.a
+```{r}
+gene_expression= AverageExpression(subset(all_timepoints, cells = all_timepoints$barcode[all_timepoints$legend %in% levels(all_timepoints$legend)[c(1,3, 5, 9, 16:20)]]), assays = 'SCT', slot = 'counts', features = tnfa_genes, group.by = 'legend_condition')
+gene_expression= as.data.frame(gene_expression$SCT)
+gene_expression$gene= rownames(gene_expression)
+
+tnfa_genes= tnfa_genes[tnfa_genes %in% rownames(gene_expression)]
+
+pct_expression_data= data.frame(fake_cluster= 1:length(tnfa_genes), row.names = tnfa_genes )
+
+for (cluster in colnames(gene_expression) ){
+  cells= all_timepoints$barcode[all_timepoints$legend_condition==cluster]
+  cluster_expression= as.data.frame(all_timepoints@assays$RNA@counts[tnfa_genes, cells]>0) 
+  pct_expression= data.frame(apply(cluster_expression, MARGIN = 1, FUN = function(x){ round(sum(x)/length(x)*100, digits = 0) } ))
+  colnames(pct_expression)= cluster
+  pct_expression_data= cbind(pct_expression_data, pct_expression)
+}
+remove(cluster, pct_expression)
+
+pct_expression_data=pct_expression_data[, 2:29]
+pct_expression_data$gene= rownames(pct_expression_data)
+pct_expression_data = tidyr::pivot_longer(pct_expression_data, cols = 1:28, values_to = 'pct_expression', names_to = 'cluster')
+
+gene_expression = tidyr::pivot_longer(gene_expression, cols = 1:28, values_to = 'avg_expression', names_to = 'cluster')
+#gene_expression$avg_expression = log10(gene_expression$avg_expression+1)
+
+plot_data= gene_expression
+plot_data$pct_expression= pct_expression_data$pct_expression
+
+cluster_metadata= all_timepoints@meta.data %>% group_by(legend_condition) %>% summarise(cluster= unique(legend_condition), legend= unique(legend), condition= unique(condition) )
+
+plot_data= left_join(plot_data, cluster_metadata[, 2:4]) 
+plot_data= plot_data[plot_data$avg_expression >0.1 & plot_data$gene %in% tnfa_genes,]
+plot_data$gene= factor(plot_data$gene, levels = rev(tnfa_genes))
+
+colnames(plot_data)[3:4]= c('Average expression', '% cells expressing')
+
+plot_data= left_join(plot_data, tnfa_direct_targets[, c('Human.Gene.Name', 'Group')] , by=c('gene'='Human.Gene.Name'))
+
+ggplot(plot_data, aes(y= gene, x= condition, size=`% cells expressing`, col=`Average expression` )) + geom_point() + facet_wrap('legend', nrow = 1)  + theme_bw() + RotatedAxis() + scale_color_gradientn(colors = c("orange", "firebrick")) 
+```
+
+# Analysis of acyclovir treated control (CTRL ACV) organoids
+
+Read digital gene expression matrices (generated with Spacemake) for CTRL samples and create Seurat objects for each sample keeping barcodes with at least 250 detected genes and genes detected at least 5 cells
+```{r eval=FALSE, include=FALSE}
+Xmoo1_CTRLACV_1 = read.table(file = 'digital_gene_expression/scRNAseq_spacemake/Xmoo1_CTRLACV_1.txt.gz', sep = '', row.names = 1, header = T) %>% CreateSeuratObject(min.cells = 5, min.features = 250, project = 'Xmoo1_CTRLACV_1', assay = 'RNA') 
+Xmoo1_CTRL_1_exonic$line = 'iPSC line 1' 
+Xmoo1_CTRL_1_exonic$replicate = 'Rep. 1' 
+Xmoo1_CTRL_1_exonic$condition = 'CTRL ACV' 
+
+Xmoo1_CTRLACV_2 = read.table(file = 'digital_gene_expression/scRNAseq_spacemake/Xmoo1_CTRLACV_2.txt.gz', sep = '', row.names = 1, header = T) %>% CreateSeuratObject(min.cells = 5, min.features = 250, project = 'Xmoo1_CTRLACV_2', assay = 'RNA') 
+Xmoo1_CTRLACV_2$line = 'iPSC line 1' 
+Xmoo1_CTRLACV_2$replicate = 'Rep. 2' 
+Xmoo1_CTRLACV_2$condition = 'CTRL ACV'
+```
+
+Create a single integrated Seurat object with all CTRL samples (2 replicates for 2 cell lines) after correcting for sample- and cell line-specific batch effects
+```{r eval=FALSE, include=FALSE}
+integration.list <- list(Xmoo1_CTRLACV_1,Xmoo1_CTRLACV_2, Xmoo1_CTRL_1_exonic, Xmoo1_CTRL_2_exonic, Gline_CTRL_1_exonic, Gline_CTRL_2_exonic)
+
+for (i in 1:length(integration.list)) {
+    integration.list[[i]] <- SCTransform(integration.list[[i]], verbose = T,method= 'glmGamPoi', assay = 'RNA', new.assay.name = 'SCT', vst.flavor='v2')
+}
+integration.features <- SelectIntegrationFeatures(object.list = integration.list, nfeatures = 3000)
+
+integration.list <- PrepSCTIntegration(object.list = integration.list, anchor.features = integration.features, verbose = T)
+integration.anchors <- FindIntegrationAnchors(object.list = integration.list, normalization.method = "SCT", anchor.features = integration.features, verbose = T)
+
+CTRL_ACV <- IntegrateData(anchorset = integration.anchors, normalization.method = "SCT",  verbose = T)
+DefaultAssay(CTRL_ACV) <- 'integrated'
+
+remove(i, integration.list, integration.features, integration.anchors)
+```
+
+Perform dimensionality reduction and clustering with 30 principal components and default parameters
+```{r eval=FALSE, include=FALSE}
+CTRL_ACV <- CTRL_ACV  %>% RunPCA( verbose = T) %>% RunUMAP( dims = 1:30, verbose = T) %>% FindNeighbors( dims = 1:30, verbose = T) %>% FindClusters( verbose = T)
+```
+
+Inspect transcript counts (nCount) and % of mitochondrial transcripts (percent_MT) to identify low quality clusters
+```{r eval=FALSE, include=FALSE}
+VlnPlot(CTRL_ACV, 'nCount_RNA', y.max = 2000, pt.size = 0)+ NoLegend()
+VlnPlot(CTRL_ACV, 'percent_MT', y.max = 2000, pt.size = 0)+ NoLegend()
+```
+
+Remove low quality clusters 2 (low nCount) and 11 (low nCount, high mito) and select top 75% cells by nCount per cluster
+```{r eval=FALSE, include=FALSE}
+CTRL_ACV$barcode= colnames(CTRL_ACV)
+top75= CTRL_ACV@meta.data[!CTRL_ACV$seurat_clusters %in% c(2, 11),] %>% group_by(seurat_clusters) %>% top_frac(n = 0.75, wt = nCount_RNA_exonic)
+CTRL_ACV = subset(CTRL_ACV, cells=top75$barcode)
+```
+
+Re-run integration, dimensionality reduction and clustering
+```{r eval=FALSE, include=FALSE}
+Idents(CTRL_ACV) = 'sample'
+integration.list <- SplitObject(CTRL_ACV)
+
+for (i in 1:length(integration.list)) {
+    integration.list[[i]] <- SCTransform(integration.list[[i]],method= 'glmGamPoi', assay = 'RNA', new.assay.name = 'SCT', vst.flavor='v2')
+}
+integration.features <- SelectIntegrationFeatures(object.list = integration.list, nfeatures = 3000)
+
+integration.list <- PrepSCTIntegration(object.list = integration.list, anchor.features = integration.features)
+integration.anchors <- FindIntegrationAnchors(object.list = integration.list, normalization.method = "SCT", anchor.features = integration.features)
+
+CTRL_ACV <- IntegrateData(anchorset = integration.anchors, normalization.method = "SCT")
+DefaultAssay(CTRL_ACV) <- 'integrated'
+CTRL_ACV <- CTRL_ACV  %>% RunPCA() %>% RunUMAP( dims = 1:30) %>% FindNeighbors( dims = 1:30) %>% FindClusters()
+
+remove(i, integration.list, integration.features, integration.anchors)
+```
+
+Add annotations of CTRL cells
+```{r eval=FALSE, include=FALSE}
+CTRL_ACV$legend_CTRL = CTRL$legend
+```
+
+Annotate clusters accordingly
+```{r eval=FALSE, include=FALSE}
+Idents(CTRL_ACV) <- 'seurat_clusters'
+CTRL_ACV <- RenameIdents(
+  object = CTRL_ACV,
+  '0'= 'Immature Cortical Neurons 2',
+  '1'= 'Radial Glia G1/S Phase',
+  '2'= 'Immature Cortical Neurons 1',
+  '3'= 'Radial Glia G2M Phase',
+  '4'= 'Astroglia',
+  '5'= 'Mature Cortical Neurons',
+  '6'= 'Intermediate Progenitors',
+  '7'= 'Hindbrain Neurons 1',
+  '8'= 'Radial Glia G1/S Phase',
+  '9'= 'Cortical Hem/Choroid Plexus', 
+  '10'= 'Thalamic Neurons',
+  '11'= 'Intermediate Progenitors',
+  '12'= 'Mature Cortical Neurons',
+  '13'= 'Retinal Progenitors',
+  '14'= 'Thalamic Neurons',
+  '15'= 'Astroglia',
+  '16'= 'Retinal Pigmented Cells',
+  '17'= 'Progenitors',
+  '18'= 'Progenitors',
+  '19'= 'Mural Cells',
+  '20'= 'Cortical Hem/Choroid Plexus', 
+  '21'= 'Hindbrain Neurons 2',
+  '22'= 'Hindbrain Neurons 2',
+  '23'= 'Cajal Retzius Neurons')
+
+CTRL_ACV$legend = Idents(CTRL_ACV)
+```
+
+Import processed object
+```{r}
+CTRL_ACV= readRDS('seurat_objects/CTRL_ACV.rds')
+```
+
+
+## Extended figure 3.b
+```{r}
+ DimPlot(CTRL_ACV, order = T, split.by = 'condition', cols = color_palette)
+```
+
+Compute TNFA pathway activity in single cells
+```{r eval=FALSE, include=FALSE}
+# Rank gene by their expression in each single cell
+cells_rankings = AUCell_buildRankings(CTRL_ACV@assays$SCT@counts, nCores = 40)
+
+# Compute the enrichment of TNFA genes
+cells_AUC = AUCell_calcAUC(list(TNFA=tnfa_genes), cells_rankings, aucMaxRank=nrow(cells_rankings)*0.05, nCores = 40)
+
+# Add TNFa score to metadata
+CTRL_ACV$tnfa_score = cells_AUC@assays@data$AUC['TNFA',]
+remove(cells_rankings, cells_AUC)
+```
+
+## Extended figure 6.a
+```{r}
+rbind(all_timepoints@meta.data[, c('tnfa_score', 'condition')], CTRL_ACV@meta.data[CTRL_ACV$condition== 'CTRL ACV', c('tnfa_score', 'condition')]  ) %>%
+  ggplot(aes(x=condition, y=tnfa_score, fill= condition)) + geom_boxplot() + ylim(c(0, 0.15)) +
+  theme_bw()
+```
+
+# Analysis of bulk RNAseq data from CTRL and HSV1 3 day post infection (3dpi) organoids
+
+Import gene expression counts and sample metadata after alignment with PigX pipeline 
+```{r}
+countData= read.csv('digital_gene_expression/bulkRNAseq_pigx/feature_counts.tsv', sep = '\t')
+colData= read.csv('digital_gene_expression/bulkRNAseq_pigx/colData.tsv', sep = '\t')[colnames(countData), ]
+```
+
+Run differential gene expression using DESeq2
+```{r}
+# Prepare DESeq 2 object and exclude cell line specific effects
+bulk_data <- DESeqDataSetFromMatrix(countData = countData,
+                                   colData = colData,
+                                   design = ~ line + group)
+
+# Filter lowly expressed genes
+bulk_data <- bulk_data[rowSums(counts(bulk_data)) >= 10,]
+
+# Fit model
+bulk_data <- DESeq(bulk_data)
+
+# Extract logFC and expression for all genes
+differential_results <- results(bulk_data)
+differential_results= data.frame(differential_results@listData, gene = rownames(bulk_data), row.names =  rownames(bulk_data))
+remove(countData, colData, bulk_data)
+```
+Identify synaptic genes
+```{r}
+synaptic.dt = gconvert(query = "GO:0007268")
+synaptic.dt= synaptic.dt[synaptic.dt$target %in% rownames(countData),]
+```
+
+## Extended figure 2.b
+```{r}
+syn.labels <- c("ARC",   "NPTX2",  "EGR2",    "SV2B", "HTR2A",
+                "GRIM3",  "SV2A",  "SCN2B", "ADCY1",   "CALB2",
+                "CPLX2",  "SYT3",  "MAP1A",  "MAPT",  "GABBR2",
+                "SEPT5", "NLGN3",  "RIMS1", "RIMS4",     "SST",
+                "SYP",   "VAMP2",  "GRIN1", "CHARM3", "SNAP25")
+
+synaptic.selected = differential_results[synaptic.dt$target[synaptic.dt$name %in%syn.labels],]
+synaptic.selected$symbol = synaptic.dt$name[synaptic.dt$name %in%syn.labels]
+
+ggplot(differential_results, aes(x= log10(baseMean+1), y= log2FoldChange)) +
+  geom_point(size=0.01, col= 'lightgrey') +
+  geom_point(data= differential_results[grepl(pattern = 'HSV', differential_results$gene),],
+             mapping= aes(x= log10(baseMean+1), y= log2FoldChange),size= 0.5,col= 'darkgreen')+
+  #geom_density2d(data = differential_results[synaptic.dt$target, ], 
+  #          mapping = aes(x= log10(baseMean+1), y= log2FoldChange), col='black') +
+  geom_hline(yintercept = 0, linetype=2) +
+  geom_point(data = differential_results[synaptic.dt$target, ], 
+            mapping = aes(x= log10(baseMean+1), y= log2FoldChange), size= 0.5, col= 'red') +
+  theme(panel.grid.major = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"), panel.border = element_blank())+
+  ggtitle('HSV1 3dpi vs CTRL (BulkRNAseq)')
+remove(synaptic.dt, synaptic.selected)
+```
+
+Identify TNF ligands
+```{r}
+# Import TNF ligands from HGNC database
+tnf_ligands= read.table('gene_lists/tnf_ligands_HGNC.csv', header = T, sep=',')[, 'Approved.symbol']
+#Convert gene symbols to ensemble ID
+library("org.Hs.eg.db")
+tnf_ligands_ensembleID <- mapIds(org.Hs.eg.db, keys = tnf_ligands, keytype = "SYMBOL", column="ENSEMBL")
+
+# Add gene symbols for TNF ligands
+differential_results$gene_symbol= NA
+differential_results[tnf_ligands_ensembleID , 'gene_symbol' ]= names(tnf_ligands_ensembleID)
+```
+
+## Extended figure 7.a
+```{r}
+# Plot FC against mean expression for all genes and highlight viral genes and TNF ligands
+ggplot(differential_results, aes(x= log10(baseMean+1), y= log2FoldChange)) +
+  geom_point(size= 0.01, col= 'lightgrey') +
+  geom_point(data= differential_results[grepl(pattern = 'HSV', differential_results$gene),],
+             mapping= aes(x= log10(baseMean+1), y= log2FoldChange),size= 1,col= 'darkgreen')+
+  geom_point(data= differential_results[differential_results$gene %in% tnf_ligands_ensembleID,],
+             mapping= aes(x= log10(baseMean+1), y= log2FoldChange),size= 1,col= 'firebrick')+
+  geom_hline(yintercept = 0, linetype=2) +
+  ggrepel::geom_text_repel(data= differential_results[differential_results$log2FoldChange>2.5, ], 
+            mapping = aes(x= log10(baseMean+1), y= log2FoldChange, label= gene_symbol), min.segment.length = 0, max.overlaps = 30)+
+  theme(panel.grid.major = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"), panel.border = element_blank())+
+  ggtitle('HSV1 3dpi vs CTRL (BulkRNAseq)')
+remove(tnf_ligands,tnf_ligands_ensembleID)
+```
+
+## Extended figure 7.b
+```{r}
+# Extract sample level pseudobulk profiles from single cell data
+sc_pseudobulk= t(rowsum(x = t(as.matrix(all_timepoints@assays$RNA@counts)), group = paste0(all_timepoints$condition, '_', all_timepoints$line, '_', all_timepoints$replicate) )) 
+
+# Define sample level metadata
+sc_colData= data.frame(group= c('CTRL','CTRL','CTRL','CTRL', 'inf1dpi','inf1dpi','inf1dpi','inf1dpi', 'inf3dpi', 'inf3dpi','inf3dpi', 'inf3dpi', 'inf3dpi_ACV','inf3dpi_ACV', 'inf3dpi_ACV','inf3dpi_ACV'), line= c('line 1','line 1','line 2','line 2', 'line 1','line 1','line 2','line 2','line 1','line 1','line 2','line 2','line 1','line 1','line 2','line 2'), row.names = colnames(sc_pseudobulk) )
+
+# Define upregulated TNF ligands
+upregulated_tnf= names(tnf_ligands_ensembleID)[tnf_ligands_ensembleID %in% differential_results$gene[differential_results$log2FoldChange>2.5]]
+
+# Plot heatmap of upregulated tnf ligands detected in single cell data
+pheatmap(sc_pseudobulk[rownames(sc_pseudobulk) %in% upregulated_tnf, rownames(sc_colData) ], annotation_col = sc_colData, cluster_cols = F, show_colnames = F, scale='row',
+        color= brewer.pal(9,'Blues'),
+        annotation_colors = list(group= c(CTRL= 'grey' , inf1dpi= 'lightgreen', inf3dpi= 'darkgreen' , inf3dpi_ACV='orange' )),
+        height = 7, width = 7, main = 'Upreglated TNF ligands detected in scRNAseq (pseudobulk)')
+remove(sc_pseudobulk, sc_colData, upregulated_tnf, differential_results)
+```
